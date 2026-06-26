@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spaceship Tunnel Runner - Progressive Escalation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        canvas {
+            background-color: #1a1a2e;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+            border: 2px solid #333;
+        }
+        #instructions {
+            position: absolute;
+            top: 20px;
+            text-align: center;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="instructions">
+        <h2>Tunnel Runner - Escalation</h2>
+        <p>Use <strong>UP</strong> and <strong>DOWN</strong> arrow keys to fly. The longer you survive, the harder it gets!</p>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+<script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    // Game Configuration
+    const SEGMENT_WIDTH = 5;
+    const MAX_STEP = 8; 
+    
+    // Progressive Difficulty Variables
+    let frames = 0; 
+    let difficulty = 0; // Scales from 0.0 to 1.0 over time
+    let currentSpeed = 4; // Starts at 4, scales up
+    let terrainOffset = 0; // Smooth sub-segment scrolling
+    
+    // Terrain Constraints
+    const START_MAX_ROCK_PCT = 0.40; // 80% total rocks, 20% gap
+    const END_MAX_ROCK_PCT = 0.45;   // 90% total rocks, 10% gap
+    let currentMaxRockHeight = canvas.height * START_MAX_ROCK_PCT;
+
+    // Game State
+    let lives = 3;
+    let score = 0;
+    let gameState = "playing"; 
+    let gameOverFade = 0;
+    let gameOverScale = 0;
+
+    // Spaceship Setup
+    const ship = {
+        x: 100,
+        y: canvas.height / 2,
+        width: 50,
+        height: 20,
+        speed: 6
+    };
+
+    // Terrain Arrays
+    let topTerrain = [];
+    let bottomTerrain = [];
+    let particles = [];
+
+    // Input Handling
+    const keys = { ArrowUp: false, ArrowDown: false };
+    
+    window.addEventListener("keydown", (e) => {
+        if (keys.hasOwnProperty(e.key)) keys[e.key] = true;
+    });
+    
+    window.addEventListener("keyup", (e) => {
+        if (keys.hasOwnProperty(e.key)) keys[e.key] = false;
+    });
+
+    // Initialize Terrain
+    function initTerrain() {
+        let currentTop = currentMaxRockHeight * 0.8;
+        let currentBottom = currentMaxRockHeight * 0.8;
+        
+        // Fill the screen with initial rocks + 1 extra to handle smooth scrolling
+        for (let i = 0; i <= (canvas.width / SEGMENT_WIDTH) + 2; i++) {
+            topTerrain.push(currentTop);
+            bottomTerrain.push(currentBottom);
+            currentTop = nextRockHeight(currentTop);
+            currentBottom = nextRockHeight(currentBottom);
+        }
+    }
+
+    // Generate continuous random walk rock height with progressive bias
+    function nextRockHeight(prevHeight) {
+        // Standard random walk
+        let change = (Math.random() - 0.5) * MAX_STEP * 2;
+        
+        // PROGRESSION LOGIC: 
+        // As difficulty approaches 1, the rocks are aggressively pulled toward their maximum height limit
+        let pullToMax = (currentMaxRockHeight - prevHeight) * 0.08 * difficulty;
+        change += pullToMax;
+        
+        let next = prevHeight + change;
+        
+        // Bounce / Clamp off boundaries
+        if (next >= currentMaxRockHeight) {
+            // Keep it jagged at the limit instead of perfectly flat
+            next = currentMaxRockHeight - Math.random() * MAX_STEP; 
+        } else if (next <= 0) {
+            next = Math.abs(change);
+        }
+        return next;
+    }
+
+    // Update Game Difficulty based on survival time
+    function updateDifficulty() {
+        frames++;
+        score = Math.floor(frames / 10);
+        
+        // Reach maximum difficulty after ~60 seconds (assuming ~60 FPS, 3600 frames)
+        difficulty = Math.min(frames / 3600, 1.0);
+        
+        // Scale speed from 4 to 9
+        currentSpeed = 4 + (difficulty * 5);
+        
+        // Scale gap from 20% down to 10%
+        let currentPct = START_MAX_ROCK_PCT + ((END_MAX_ROCK_PCT - START_MAX_ROCK_PCT) * difficulty);
+        currentMaxRockHeight = canvas.height * currentPct;
+    }
+
+    // Update Terrain Arrays smoothly
+    function updateTerrain() {
+        terrainOffset += currentSpeed;
+        
+        // Shift arrays when offset exceeds segment width
+        while (terrainOffset >= SEGMENT_WIDTH) {
+            terrainOffset -= SEGMENT_WIDTH;
+            topTerrain.shift();
+            bottomTerrain.shift();
+            
+            let lastTop = topTerrain[topTerrain.length - 1];
+            let lastBottom = bottomTerrain[bottomTerrain.length - 1];
+            
+            topTerrain.push(nextRockHeight(lastTop));
+            bottomTerrain.push(nextRockHeight(lastBottom));
+        }
+    }
+
+    // Create Explosion
+    function createExplosion(x, y) {
+        particles = [];
+        for (let i = 0; i < 50; i++) {
+            particles.push({
+                x: x,
+                y: y,
+                vx: (Math.random() - 0.5) * 12,
+                vy: (Math.random() - 0.5) * 12,
+                radius: Math.random() * 4 + 1,
+                color: Math.random() > 0.5 ? '#ff4500' : '#fff',
+                life: 1.0
+            });
+        }
+        gameState = "exploding";
+        
+        setTimeout(() => {
+            lives--;
+            if (lives > 0) {
+                ship.y = canvas.height / 2; // Reset safely
+                gameState = "playing";
+            } else {
+                gameState = "gameover";
+            }
+        }, 1500);
+    }
+
+    // Check Collisions
+    function checkCollision() {
+        // Adjust for smooth scrolling offset
+        let shipFrontX = ship.x + ship.width / 2 - 5 + terrainOffset; 
+        let shipBackX = ship.x - ship.width / 2 + 5 + terrainOffset;
+        let shipTopY = ship.y - ship.height / 2 + 3;  
+        let shipBottomY = ship.y + ship.height / 2 - 3;
+
+        let startIndex = Math.floor(shipBackX / SEGMENT_WIDTH);
+        let endIndex = Math.floor(shipFrontX / SEGMENT_WIDTH);
+
+        for (let i = startIndex; i <= endIndex; i++) {
+            if (i >= 0 && i < topTerrain.length) {
+                let rockTop = topTerrain[i];
+                let rockBottom = canvas.height - bottomTerrain[i];
+
+                if (shipTopY < rockTop || shipBottomY > rockBottom) {
+                    createExplosion(ship.x, ship.y);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Draw Rocket
+    function drawShip() {
+        ctx.save();
+        ctx.translate(ship.x, ship.y);
+        
+        if (keys.ArrowUp) ctx.rotate(-0.15);
+        if (keys.ArrowDown) ctx.rotate(0.15);
+
+        // Rocket Flame (Flickers faster based on speed)
+        if (Math.random() > 0.2) {
+            ctx.fillStyle = "#ff5722";
+            ctx.beginPath();
+            ctx.moveTo(-ship.width/2, -5);
+            ctx.lineTo(-ship.width/2 - (Math.random() * (15 + currentSpeed) + 10), 0);
+            ctx.lineTo(-ship.width/2, 5);
+            ctx.fill();
+        }
+
+        ctx.fillStyle = "#ddd";
+        ctx.beginPath();
+        ctx.ellipse(0, 0, ship.width/2, ship.height/2, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#4fc3f7";
+        ctx.beginPath();
+        ctx.ellipse(10, -3, 8, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#d32f2f";
+        ctx.beginPath();
+        ctx.moveTo(-ship.width/2 + 5, -ship.height/2 + 2);
+        ctx.lineTo(-ship.width/2 - 5, -ship.height/2 - 8);
+        ctx.lineTo(-ship.width/2 + 15, -ship.height/2 + 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(-ship.width/2 + 5, ship.height/2 - 2);
+        ctx.lineTo(-ship.width/2 - 5, ship.height/2 + 8);
+        ctx.lineTo(-ship.width/2 + 15, ship.height/2 - 2);
+        ctx.fill();
+
+        ctx.restore();
+    }
+
+    // Draw Rocks
+    function drawTerrain() {
+        ctx.save();
+        // Shift left by the smooth fractional amount
+        ctx.translate(-terrainOffset, 0); 
+        
+        ctx.fillStyle = "#4a4a4a"; 
+        
+        // Draw Top Rocks
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        for (let i = 0; i < topTerrain.length; i++) {
+            ctx.lineTo(i * SEGMENT_WIDTH, topTerrain[i]);
+        }
+        ctx.lineTo(topTerrain.length * SEGMENT_WIDTH, 0);
+        ctx.fill();
+
+        ctx.strokeStyle = "#5a5a5a";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < topTerrain.length; i++) {
+            ctx.lineTo(i * SEGMENT_WIDTH, topTerrain[i]);
+        }
+        ctx.stroke();
+
+        // Draw Bottom Rocks
+        ctx.beginPath();
+        ctx.moveTo(0, canvas.height);
+        for (let i = 0; i < bottomTerrain.length; i++) {
+            ctx.lineTo(i * SEGMENT_WIDTH, canvas.height - bottomTerrain[i]);
+        }
+        ctx.lineTo(bottomTerrain.length * SEGMENT_WIDTH, canvas.height);
+        ctx.fill();
+        
+        ctx.beginPath();
+        for (let i = 0; i < bottomTerrain.length; i++) {
+            ctx.lineTo(i * SEGMENT_WIDTH, canvas.height - bottomTerrain[i]);
+        }
+        ctx.stroke();
+        
+        ctx.restore();
+    }
+
+    // Draw UI (Lives, Score, Difficulty Meter)
+    function drawUI() {
+        ctx.fillStyle = "white";
+        ctx.font = "20px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(`Lives: ${lives}`, 20, 30);
+        
+        ctx.textAlign = "right";
+        ctx.fillText(`Score: ${score}`, canvas.width - 20, 30);
+        
+        // Draw Difficulty Alert if near max
+        if (difficulty > 0.8 && gameState === "playing") {
+            ctx.fillStyle = "red";
+            ctx.font = "16px Arial";
+            ctx.fillText(`WARNING: MAX SPEED`, canvas.width - 20, 55);
+        }
+    }
+
+    // Main Game Loop
+    function update() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (gameState === "playing") {
+            updateDifficulty();
+            
+            // Move Ship
+            if (keys.ArrowUp) ship.y -= ship.speed;
+            if (keys.ArrowDown) ship.y += ship.speed;
+
+            if (ship.y < ship.height) ship.y = ship.height;
+            if (ship.y > canvas.height - ship.height) ship.y = canvas.height - ship.height;
+
+            updateTerrain();
+            checkCollision();
+
+            drawTerrain();
+            drawShip();
+            drawUI();
+
+        } else if (gameState === "exploding") {
+            drawTerrain(); 
+            
+            particles.forEach((p, index) => {
+                p.x += p.vx - (currentSpeed * 0.5); // Drift back with momentum
+                p.y += p.vy;
+                p.life -= 0.02;
+                
+                if (p.life > 0) {
+                    ctx.globalAlpha = p.life;
+                    ctx.fillStyle = p.color;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.globalAlpha = 1.0;
+                } else {
+                    particles.splice(index, 1);
+                }
+            });
+            drawUI();
+
+        } else if (gameState === "gameover") {
+            drawTerrain(); 
+            drawUI();
+            
+            if (gameOverFade < 1.0) {
+                gameOverFade += 0.01;
+            }
+            ctx.fillStyle = `rgba(0, 0, 0, ${gameOverFade})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (gameOverFade > 0.3) {
+                if (gameOverScale < 1.0) gameOverScale += 0.02;
+                
+                ctx.save();
+                ctx.translate(canvas.width / 2, canvas.height / 2);
+                ctx.scale(gameOverScale, gameOverScale);
+                ctx.fillStyle = "red";
+                ctx.font = "bold 60px Arial";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.shadowColor = "darkred";
+                ctx.shadowBlur = 10;
+                ctx.fillText("GAME OVER", 0, -20);
+                
+                ctx.fillStyle = "white";
+                ctx.font = "24px Arial";
+                ctx.shadowBlur = 0;
+                ctx.fillText(`Final Score: ${score}`, 0, 30);
+                ctx.restore();
+            }
+        }
+
+        requestAnimationFrame(update);
+    }
+
+    // Start Game
+    initTerrain();
+    update();
+
+</script>
+</body>
+</html>
