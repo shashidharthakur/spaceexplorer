@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spaceship Tunnel Runner - Progressive Escalation</title>
+    <title>Spaceship Tunnel Runner - Unconstrained</title>
     <style>
         body {
             margin: 0;
@@ -33,8 +33,8 @@
 <body>
 
     <div id="instructions">
-        <h2>Tunnel Runner - Escalation</h2>
-        <p>Use <strong>UP</strong> and <strong>DOWN</strong> arrow keys to fly. The longer you survive, the harder it gets!</p>
+        <h2>Tunnel Runner - Unconstrained</h2>
+        <p>Use <strong>UP</strong> and <strong>DOWN</strong> arrow keys to fly. The tunnel wanders freely!</p>
     </div>
 
     <canvas id="gameCanvas" width="800" height="600"></canvas>
@@ -53,10 +53,10 @@
     let currentSpeed = 4; // Starts at 4, scales up
     let terrainOffset = 0; // Smooth sub-segment scrolling
     
-    // Terrain Constraints
-    const START_MAX_ROCK_PCT = 0.40; // 80% total rocks, 20% gap
-    const END_MAX_ROCK_PCT = 0.45;   // 90% total rocks, 10% gap
-    let currentMaxRockHeight = canvas.height * START_MAX_ROCK_PCT;
+    // Space Constraints (Gap reduces from 20% to 10%)
+    const START_GAP_PCT = 0.20; 
+    const END_GAP_PCT = 0.10;   
+    let currentGap = canvas.height * START_GAP_PCT;
 
     // Game State
     let lives = 3;
@@ -90,40 +90,54 @@
         if (keys.hasOwnProperty(e.key)) keys[e.key] = false;
     });
 
+    // Generate terrain maintaining ONLY the gap constraint
+    function calculateNextTerrain(lastTop, lastBottom, gap, currentDiff) {
+        // As difficulty increases, the rocks have a higher bias to grow towards the middle, 
+        // forcing the tunnel to shrink to its exact allowed gap constraint.
+        let bias = MAX_STEP * 0.25 * currentDiff; 
+        
+        let topChange = (Math.random() - 0.5) * MAX_STEP * 2 + bias;
+        let bottomChange = (Math.random() - 0.5) * MAX_STEP * 2 + bias;
+        
+        let nextTop = lastTop + topChange;
+        let nextBottom = lastBottom + bottomChange;
+        
+        // Prevent rocks from receding entirely off-screen (negative heights)
+        if (nextTop < 0) nextTop = Math.abs(topChange);
+        if (nextBottom < 0) nextBottom = Math.abs(bottomChange);
+        
+        // CONFLICT RESOLUTION: Check if rocks violate the space required for the spaceship
+        let availableSpace = canvas.height - nextTop - nextBottom;
+        if (availableSpace < gap) {
+            // Find the mathematical midpoint of where the gap tried to form
+            let midpoint = nextTop + (availableSpace / 2);
+            
+            // Clamp the midpoint so it doesn't force a rock completely off-screen
+            if (midpoint < gap / 2) midpoint = gap / 2;
+            if (midpoint > canvas.height - (gap / 2)) midpoint = canvas.height - (gap / 2);
+            
+            // Force the top and bottom rocks perfectly apart to match the gap
+            nextTop = midpoint - (gap / 2);
+            nextBottom = canvas.height - (midpoint + (gap / 2));
+        }
+        
+        return { top: nextTop, bottom: nextBottom };
+    }
+
     // Initialize Terrain
     function initTerrain() {
-        let currentTop = currentMaxRockHeight * 0.8;
-        let currentBottom = currentMaxRockHeight * 0.8;
+        let currentTop = canvas.height * 0.40;
+        let currentBottom = canvas.height * 0.40;
         
         // Fill the screen with initial rocks + 1 extra to handle smooth scrolling
         for (let i = 0; i <= (canvas.width / SEGMENT_WIDTH) + 2; i++) {
             topTerrain.push(currentTop);
             bottomTerrain.push(currentBottom);
-            currentTop = nextRockHeight(currentTop);
-            currentBottom = nextRockHeight(currentBottom);
+            
+            let next = calculateNextTerrain(currentTop, currentBottom, currentGap, 0);
+            currentTop = next.top;
+            currentBottom = next.bottom;
         }
-    }
-
-    // Generate continuous random walk rock height with progressive bias
-    function nextRockHeight(prevHeight) {
-        // Standard random walk
-        let change = (Math.random() - 0.5) * MAX_STEP * 2;
-        
-        // PROGRESSION LOGIC: 
-        // As difficulty approaches 1, the rocks are aggressively pulled toward their maximum height limit
-        let pullToMax = (currentMaxRockHeight - prevHeight) * 0.08 * difficulty;
-        change += pullToMax;
-        
-        let next = prevHeight + change;
-        
-        // Bounce / Clamp off boundaries
-        if (next >= currentMaxRockHeight) {
-            // Keep it jagged at the limit instead of perfectly flat
-            next = currentMaxRockHeight - Math.random() * MAX_STEP; 
-        } else if (next <= 0) {
-            next = Math.abs(change);
-        }
-        return next;
     }
 
     // Update Game Difficulty based on survival time
@@ -137,9 +151,9 @@
         // Scale speed from 4 to 9
         currentSpeed = 4 + (difficulty * 5);
         
-        // Scale gap from 20% down to 10%
-        let currentPct = START_MAX_ROCK_PCT + ((END_MAX_ROCK_PCT - START_MAX_ROCK_PCT) * difficulty);
-        currentMaxRockHeight = canvas.height * currentPct;
+        // Scale the required gap down from 20% to 10%
+        let currentGapPct = START_GAP_PCT - ((START_GAP_PCT - END_GAP_PCT) * difficulty);
+        currentGap = canvas.height * currentGapPct;
     }
 
     // Update Terrain Arrays smoothly
@@ -155,8 +169,10 @@
             let lastTop = topTerrain[topTerrain.length - 1];
             let lastBottom = bottomTerrain[bottomTerrain.length - 1];
             
-            topTerrain.push(nextRockHeight(lastTop));
-            bottomTerrain.push(nextRockHeight(lastBottom));
+            let next = calculateNextTerrain(lastTop, lastBottom, currentGap, difficulty);
+            
+            topTerrain.push(next.top);
+            bottomTerrain.push(next.bottom);
         }
     }
 
@@ -179,7 +195,12 @@
         setTimeout(() => {
             lives--;
             if (lives > 0) {
-                ship.y = canvas.height / 2; // Reset safely
+                // Find a safe height directly ahead in the current gap to respawn
+                let safeIndex = Math.floor((ship.x / SEGMENT_WIDTH) + 2);
+                let safeTop = topTerrain[safeIndex];
+                let safeBottomHeight = canvas.height - bottomTerrain[safeIndex];
+                ship.y = safeTop + ((safeBottomHeight - safeTop) / 2); 
+                
                 gameState = "playing";
             } else {
                 gameState = "gameover";
@@ -189,7 +210,6 @@
 
     // Check Collisions
     function checkCollision() {
-        // Adjust for smooth scrolling offset
         let shipFrontX = ship.x + ship.width / 2 - 5 + terrainOffset; 
         let shipBackX = ship.x - ship.width / 2 + 5 + terrainOffset;
         let shipTopY = ship.y - ship.height / 2 + 3;  
@@ -258,7 +278,6 @@
     // Draw Rocks
     function drawTerrain() {
         ctx.save();
-        // Shift left by the smooth fractional amount
         ctx.translate(-terrainOffset, 0); 
         
         ctx.fillStyle = "#4a4a4a"; 
@@ -308,7 +327,6 @@
         ctx.textAlign = "right";
         ctx.fillText(`Score: ${score}`, canvas.width - 20, 30);
         
-        // Draw Difficulty Alert if near max
         if (difficulty > 0.8 && gameState === "playing") {
             ctx.fillStyle = "red";
             ctx.font = "16px Arial";
